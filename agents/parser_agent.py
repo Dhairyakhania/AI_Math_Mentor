@@ -16,6 +16,24 @@ import re
 
 MATH_CONSTANTS = {"i", "e", "pi"}  # imaginary unit, Euler, π
 
+CALCULUS_KEYWORDS = {
+    "integrate", "integration", "integral", "∫", "dx",
+    "differentiate", "derivative", "d/dx",
+    "limit", "lim"
+}
+
+PROBABILITY_KEYWORDS = {
+    "probability", "chance", "random",
+    "coin", "coins", "dice", "die",
+    "card", "cards", "balls", "bag",
+    "choose", "select", "pick"
+}
+
+WORD_PROBLEM_KEYWORDS = {
+    "find", "evaluate", "calculate",
+    "determine", "what is", "how many"
+}
+
 
 # -------------------------------
 # Validation helpers (NO LLM)
@@ -35,33 +53,29 @@ def _has_balanced_brackets(text: str) -> bool:
 
 def _looks_like_math(text: str) -> bool:
     """
-    Detects whether input is a math problem.
-    Supports equations, word problems, and probability questions.
+    Detects equations, calculus, probability, and worded math problems.
     """
     text_lower = text.lower()
 
     # 1. Symbolic math
-    math_symbols = ["=", "+", "-", "*", "/", "^", "√"]
+    math_symbols = ["=", "+", "-", "*", "/", "^", "√", "∫"]
     if any(sym in text for sym in math_symbols):
         return True
 
-    # 2. Numeric presence (counts, quantities)
+    # 2. Numbers present
     if re.search(r"\d", text):
         return True
 
-    # 3. Word-problem / probability cues
-    math_keywords = [
-        "probability", "chance",
-        "how many", "number of", "total",
-        "sum", "difference", "product",
-        "ratio", "fraction", "percent",
-        "average", "mean",
-        "container", "bag", "balls", "cards",
-        "dice", "coin", "pick", "choose",
-        "select", "random"
-    ]
+    # 3. Calculus language
+    if any(k in text_lower for k in CALCULUS_KEYWORDS):
+        return True
 
-    if any(keyword in text_lower for keyword in math_keywords):
+    # 4. Probability language
+    if any(k in text_lower for k in PROBABILITY_KEYWORDS):
+        return True
+
+    # 5. Generic math word problems
+    if any(k in text_lower for k in WORD_PROBLEM_KEYWORDS):
         return True
 
     return False
@@ -69,12 +83,12 @@ def _looks_like_math(text: str) -> bool:
 
 def _has_invalid_symbols(text: str) -> bool:
     """
-    Allows normal English + math.
-    Blocks emojis, control chars, code, etc.
+    Allows math + English.
+    Blocks emojis, code fragments, and unsafe characters.
     """
     return bool(
         re.search(
-            r"[^a-zA-Z0-9\s\+\-\*/=\^\(\)\[\]\{\}\.,√%?:;\'\"<>|\\n\\t]",
+            r"[<>@#$~`|\\]",
             text
         )
     )
@@ -86,8 +100,8 @@ def _has_invalid_symbols(text: str) -> bool:
 
 class ParserAgent(BaseAgent):
     """
-    Strict, domain-aware math parser.
-    Produces a ParsedProblem or clarification request.
+    Strict but math-aware parser.
+    Supports algebra, calculus, probability, and word problems.
     """
 
     def __init__(self):
@@ -100,7 +114,7 @@ class ParserAgent(BaseAgent):
                 "Do NOT explain anything.",
                 "If input is unclear, mark needs_clarification = true."
             ],
-            tools=[]  # no tools → safe for Groq
+            tools=[]
         )
 
     # --------------------------------
@@ -120,7 +134,7 @@ class ParserAgent(BaseAgent):
         text = raw_input.content.strip()
 
         # -------------------------------
-        # HARD VALIDATION (NO LLM)
+        # HARD VALIDATION
         # -------------------------------
 
         if not text:
@@ -132,7 +146,7 @@ class ParserAgent(BaseAgent):
         if not _looks_like_math(text):
             return self._clarify(
                 text,
-                "Input does not appear to be a math problem."
+                "Input does not appear to be a mathematical problem."
             )
 
         if not _has_balanced_brackets(text):
@@ -144,7 +158,7 @@ class ParserAgent(BaseAgent):
         if _has_invalid_symbols(text):
             return self._clarify(
                 text,
-                "Invalid or unclear symbols detected. Please rewrite the problem."
+                "Invalid or unsupported symbols detected."
             )
 
         # -------------------------------
@@ -158,7 +172,8 @@ RULES:
 - Output ONLY JSON
 - Do NOT add explanations
 - Do NOT include markdown
-- Use one of: algebra, calculus, probability, linear_algebra, unknown
+- Topic must be one of:
+  algebra, calculus, probability, linear_algebra, unknown
 
 INPUT:
 {text}
@@ -175,15 +190,13 @@ JSON FORMAT:
 
         response = self.run(prompt)
 
-        if not isinstance(response, str) or not response.strip():
-            raise RuntimeError("Parser LLM returned empty or invalid response")
-
         try:
             data = self._extract_json(response)
-        except Exception as e:
-            raise RuntimeError(
-                f"Parser JSON extraction failed: {str(e)}"
-            ) from e
+        except Exception:
+            return self._clarify(
+                text,
+                "Parser could not confidently structure the problem."
+            )
 
         # -------------------------------
         # Topic Mapping
@@ -202,7 +215,7 @@ JSON FORMAT:
         )
 
         # -------------------------------
-        # Variable Semantic Correction
+        # Variable Cleanup
         # -------------------------------
 
         variables = data.get("variables", [])
@@ -232,7 +245,7 @@ JSON FORMAT:
             problem_text=data.get("problem_text", text),
             topic=topic,
             variables=sorted(set(cleaned_vars)),
-            needs_clarification=bool(data.get("needs_clarification", False)),
+            needs_clarification=False,
             clarification_reason=None,
             confidence=min(
                 max(float(data.get("confidence", 0.8)), 0.0),
