@@ -1,6 +1,7 @@
 """
 JEE-grade Solver Agent using Agno.
 Handles direct math and word problems with strict structure.
+RAG-COMPLIANT + TYPE-SAFE VERSION.
 """
 
 from agents.base_agent import BaseAgent
@@ -29,7 +30,7 @@ class SolverAgent(BaseAgent):
         )
 
     # ------------------------------------------------------------------
-    # ENTRY POINT (agent-compatible)
+    # ENTRY POINT
     # ------------------------------------------------------------------
 
     def process(self, input_data: Any) -> Solution:
@@ -56,14 +57,28 @@ class SolverAgent(BaseAgent):
         context: list
     ) -> Solution:
 
+        # -------------------------------------------------
+        # HARD BLOCK: NO RAG CONTEXT → NO SOLVE
+        # -------------------------------------------------
+        if not context:
+            return Solution(
+                final_answer="Insufficient reference material to solve reliably.",
+                steps=[],
+                method_used="rag_blocked",
+                context_used=[],
+                tool_calls=[],
+                confidence=0.2
+            )
+
         problem_type = routing_info.get("problem_type", "direct_math")
         equations = routing_info.get("equations", [])
         variables = routing_info.get("variables", {})
         constraints = routing_info.get("constraints", [])
+        memory_hints = routing_info.get("memory_hints", [])
 
-        # ---------------------------
-        # Prompt construction
-        # ---------------------------
+        # -------------------------------------------------
+        # PROMPT CONSTRUCTION
+        # -------------------------------------------------
 
         prompt = f"""
 Solve the following JEE-level mathematics problem.
@@ -71,6 +86,37 @@ Solve the following JEE-level mathematics problem.
 PROBLEM:
 {parsed_problem.problem_text}
 """
+
+        # -------------------------------------------------
+        # INJECT RAG CONTEXT (MANDATORY)
+        # -------------------------------------------------
+
+        prompt += "\nREFERENCE MATERIAL (USE ONLY IF RELEVANT):\n"
+
+        for i, ctx in enumerate(context, start=1):
+            # Defensive: context may not yet be normalized
+            source = getattr(ctx, "source", "unknown")
+            text = getattr(ctx, "text", "")
+
+            prompt += f"""
+REFERENCE {i}:
+SOURCE: {source}
+CONTENT:
+{text}
+"""
+
+        # -------------------------------------------------
+        # MEMORY-AWARE AUGMENTATION
+        # -------------------------------------------------
+
+        if memory_hints:
+            prompt += "\nKNOWN PITFALLS FROM PAST ATTEMPTS:\n"
+            for hint in memory_hints:
+                prompt += f"- {hint}\n"
+
+        # -------------------------------------------------
+        # PROBLEM TYPE HANDLING
+        # -------------------------------------------------
 
         if problem_type == "word_problem":
             prompt += f"""
@@ -96,6 +142,10 @@ CONSTRAINTS:
 THIS IS A DIRECT MATHEMATICAL PROBLEM.
 """
 
+        # -------------------------------------------------
+        # STRICT SOLVING RULES
+        # -------------------------------------------------
+
         prompt += """
 RULES:
 - Each step MUST include:
@@ -106,6 +156,7 @@ RULES:
 - Do NOT explain in prose
 - Do NOT skip steps
 - Do NOT verify correctness
+- Use reference material only when relevant
 
 FORMAT STRICTLY:
 
@@ -128,9 +179,9 @@ Begin solving now.
         if not isinstance(response, str) or not response.strip():
             raise RuntimeError("Solver LLM returned empty or invalid response")
 
-        # ---------------------------
-        # STEP extraction
-        # ---------------------------
+        # -------------------------------------------------
+        # STEP EXTRACTION
+        # -------------------------------------------------
 
         steps: List[SolutionStep] = []
 
@@ -148,7 +199,6 @@ Begin solving now.
                 )
             )
 
-        # Fallback: ensure at least one step exists
         if not steps:
             steps.append(
                 SolutionStep(
@@ -157,43 +207,66 @@ Begin solving now.
                 )
             )
 
-        # ---------------------------
-        # FINAL ANSWER extraction
-        # ---------------------------
+        # -------------------------------------------------
+        # FINAL ANSWER EXTRACTION
+        # -------------------------------------------------
 
         final_answer = self._extract_final_answer(response)
 
-        # ---------------------------
-        # Context normalization (CRITICAL)
-        # ---------------------------
+        # -------------------------------------------------
+        # CONTEXT NORMALIZATION (CRITICAL FIX)
+        # -------------------------------------------------
 
         normalized_context: List[RetrievedContext] = []
 
-        if context:
-            for item in context:
-                # Proper RetrievedContext
-                if isinstance(item, RetrievedContext):
-                    normalized_context.append(item)
+        for item in context:
+            # Already correct type
+            if isinstance(item, RetrievedContext):
+                normalized_context.append(item)
 
-                # Strategy dict or other metadata → ignore safely
-                elif isinstance(item, dict):
+            # Dict leaked in → normalize safely
+            elif isinstance(item, dict):
+                try:
+                    normalized_context.append(
+                        RetrievedContext(
+                            text=item.get("text", ""),
+                            source=item.get("source", "unknown"),
+                            relevance_score=float(item.get("relevance_score", 0.0)),
+                            metadata=item.get("metadata", {})
+                        )
+                    )
+                except Exception:
+                    # Skip malformed context entries safely
                     continue
 
-        # ---------------------------
-        # Final Solution object
-        # ---------------------------
+        # -------------------------------------------------
+        # CONFIDENCE CALIBRATION
+        # -------------------------------------------------
+
+        if normalized_context:
+            avg_relevance = sum(
+                c.relevance_score for c in normalized_context
+            ) / len(normalized_context)
+        else:
+            avg_relevance = 0.3
+
+        confidence = min(0.95, max(0.3, avg_relevance))
+
+        # -------------------------------------------------
+        # FINAL SOLUTION
+        # -------------------------------------------------
 
         return Solution(
             final_answer=final_answer,
             steps=steps,
-            method_used="jee_structured_reasoning",
+            method_used="jee_structured_rag_reasoning",
             context_used=normalized_context,
             tool_calls=[],
-            confidence=0.9
+            confidence=confidence
         )
 
     # ------------------------------------------------------------------
-    # Utilities
+    # UTILITIES
     # ------------------------------------------------------------------
 
     def _extract_final_answer(self, text: str) -> str:

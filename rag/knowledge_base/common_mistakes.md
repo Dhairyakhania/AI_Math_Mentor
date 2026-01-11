@@ -1,6 +1,7 @@
 ---
 topic: general
 type: common_mistakes
+source: common_mistakes.md
 ---
 
 # General Mathematical Mistakes

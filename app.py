@@ -1,9 +1,7 @@
 """
-Math Mentor - Local Development Version
-========================================
-Simple Streamlit app using Agno with Gemini + Groq
-
-Run: streamlit run app.py
+Math Mentor - Local / Deployable Streamlit App
+==============================================
+AI-powered multimodal JEE-style math solver
 """
 
 import streamlit as st
@@ -30,12 +28,12 @@ st.set_page_config(
 # IMPORTS
 # ============================================
 from config import Config
-from models.schemas import RawInput, InputType
 from processors.text_processor import TextProcessor
 from processors.ocr_processor import OCRProcessor
 from processors.audio_processor import AudioProcessor
 from agents.team import MathMentorTeam
 from memory.store import MemoryStore
+from rag.auto_ingest import auto_ingest_if_needed
 
 # ============================================
 # CACHED LOADERS
@@ -62,12 +60,23 @@ def load_audio():
     return AudioProcessor()
 
 # ============================================
+# AUTO INGEST KB (RUN ONCE)
+# ============================================
+
+@st.cache_resource
+def ensure_kb_loaded():
+    auto_ingest_if_needed()
+
+# ============================================
 # MAIN APP
 # ============================================
 
 def main():
+
+    ensure_kb_loaded()
+
     st.title("🧮 Math Mentor")
-    st.markdown("### AI-Powered Math Problem Solver")
+    st.markdown("### Reliable AI Math Solver (RAG + Agents + HITL + Memory)")
     st.markdown("---")
 
     # ============================================
@@ -85,6 +94,7 @@ def main():
     # INIT COMPONENTS
     # ============================================
     team = load_team()
+    memory = load_memory()
     text_processor = load_text_processor()
 
     # ============================================
@@ -98,6 +108,9 @@ def main():
 
     if "resubmitted_text" not in st.session_state:
         st.session_state.resubmitted_text = None
+
+    if "user_correction" not in st.session_state:
+        st.session_state.user_correction = ""
 
     # ============================================
     # HANDLE HITL RESUBMISSION
@@ -118,7 +131,6 @@ def main():
     with st.sidebar:
         st.header("Math Mentor")
         st.markdown("---")
-        st.subheader("Status")
 
         if Config.LLM_PROVIDER == "gemini":
             st.success("Gemini connected")
@@ -127,9 +139,7 @@ def main():
 
         st.markdown("---")
         st.subheader("Agents")
-
-        team_info = team.get_team_info()
-        for agent in team_info.get("agents", []):
+        for agent in team.get_team_info().get("agents", []):
             st.caption(f"• {agent['name']}")
 
     # ============================================
@@ -144,7 +154,7 @@ def main():
         problem = st.text_area(
             "Enter problem:",
             height=120,
-            placeholder="e.g., 3 * {4 [85 + 5 − (15 / 3)] + 2}"
+            placeholder="e.g., If x^2 - 5x + 6 = 0, find x"
         )
 
         if st.button("Solve", type="primary"):
@@ -163,7 +173,7 @@ def main():
         )
 
         if uploaded:
-            st.image(uploaded, caption="Uploaded", width=400)
+            st.image(uploaded, caption="Uploaded image", width=400)
 
             if st.button("Extract & Solve", type="primary"):
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f:
@@ -171,7 +181,7 @@ def main():
                     path = f.name
 
                 try:
-                    with st.spinner("Extracting..."):
+                    with st.spinner("Extracting text..."):
                         raw_input = load_ocr().process(path)
 
                     if raw_input and raw_input.content:
@@ -185,7 +195,7 @@ def main():
     # ---------------- AUDIO ----------------
     with tab3:
         if not Config.GROQ_API_KEY:
-            st.warning("GROQ_API_KEY required for audio")
+            st.warning("GROQ_API_KEY required for audio input")
         else:
             audio_file = st.file_uploader(
                 "Upload audio",
@@ -226,7 +236,7 @@ def main():
 
         # ---------- HITL ----------
         elif result.status == "needs_hitl":
-            st.warning(result.hitl_reason or "Clarification required")
+            st.warning(f"HUMAN REVIEW REQUIRED: {result.hitl_reason}")
 
             edited = st.text_area(
                 "Clarify your problem:",
@@ -234,7 +244,7 @@ def main():
                 key="hitl_input"
             )
 
-            if st.button("Resubmit", key="resubmit_btn"):
+            if st.button("Resubmit"):
                 st.session_state.pending_resubmit = True
                 st.session_state.resubmitted_text = edited
                 st.rerun()
@@ -245,17 +255,26 @@ def main():
 
             col1, col2 = st.columns([2, 1])
 
+            # -------- Explanation --------
             with col1:
                 st.markdown("### Explanation")
                 st.info(result.explanation.summary)
 
                 if result.explanation.detailed_steps:
                     with st.expander("Detailed Steps", expanded=True):
-                        for i, step in enumerate(
-                            result.explanation.detailed_steps, 1
-                        ):
-                            st.markdown(f"Step {i}: {step}")
+                        for i, step in enumerate(result.explanation.detailed_steps, 1):
+                            st.markdown(f"**Step {i}:** {step}")
 
+                # -------- RAG CONTEXT --------
+                if result.solution.context_used:
+                    with st.expander("📚 Retrieved Reference Material"):
+                        for i, ctx in enumerate(result.solution.context_used, 1):
+                            st.markdown(f"**Source {i}: {ctx.source}**")
+                            st.caption(f"Relevance: {ctx.relevance_score:.2f}")
+                            st.write(ctx.text)
+                            st.markdown("---")
+
+            # -------- Verification --------
             with col2:
                 st.markdown("### Verification")
                 conf = result.verification.confidence
@@ -267,13 +286,49 @@ def main():
                 else:
                     st.error(f"Confidence: {conf:.0%}")
 
+                with st.expander("🧠 Agent Trace"):
+                    st.markdown("- Parser Agent → structured problem")
+                    st.markdown("- Router Agent → problem classification")
+                    st.markdown("- Solver Agent → RAG-based reasoning")
+                    st.markdown("- Verifier Agent → correctness checks")
+
+            # -------- FEEDBACK --------
             st.markdown("---")
+            st.markdown("### Was this solution correct?")
+
+            col_ok, col_bad = st.columns(2)
+
+            with col_ok:
+                if st.button("✅ Correct"):
+                    memory.store_success(
+                        raw_input=result.raw_input,
+                        parsed_problem=result.parsed_problem,
+                        solution=result.solution,
+                        verification=result.verification
+                    )
+                    st.success("Feedback saved. Thank you!")
+
+            with col_bad:
+                st.session_state.user_correction = st.text_area(
+                    "Provide correction:",
+                    value=st.session_state.user_correction
+                )
+                if st.button("❌ Submit Correction"):
+                    memory.store_failure(
+                        raw_input=result.raw_input,
+                        parsed_problem=result.parsed_problem,
+                        solution=result.solution,
+                        correction=st.session_state.user_correction
+                    )
+                    st.warning("Correction stored for future learning.")
+
             if st.button("New Problem"):
                 st.session_state.result = None
+                st.session_state.user_correction = ""
                 st.rerun()
 
     st.markdown("---")
-    st.caption("Math Mentor | Agno + Gemini + Groq")
+    st.caption("Math Mentor | RAG + Agents + HITL + Memory")
 
 # ============================================
 if __name__ == "__main__":

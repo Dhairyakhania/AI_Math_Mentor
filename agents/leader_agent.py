@@ -10,6 +10,8 @@ from agents.solver_agent import SolverAgent
 from agents.verifier_agent import VerifierAgent
 from agents.explainer_agent import ExplainerAgent
 
+from rag.retriever import RAGRetriever
+
 from models.schemas import (
     RawInput, ParsedProblem, Solution, Verification,
     Explanation, FinalResult, AgentTrace
@@ -23,13 +25,14 @@ class LeaderAgent:
     """
     Orchestrates the Math Mentor workflow.
     Pipeline:
-    Parser → Strategy → Router → Solver → Verifier → Explainer
+    Parser → Strategy → Router → Retriever → Solver → Verifier → Explainer
     """
 
     def __init__(self):
         self.parser = ParserAgent()
         self.strategy = StrategyAgent()
         self.router = RouterAgent()
+        self.retriever = RAGRetriever()
         self.solver = SolverAgent()
         self.verifier = VerifierAgent()
         self.explainer = ExplainerAgent()
@@ -81,16 +84,27 @@ class LeaderAgent:
             )
 
             # -----------------------------
-            # STEP 4: SOLVER
+            # STEP 4: RETRIEVER (RAG)
+            # -----------------------------
+            trace = self._create_trace("Retriever", "Fetching reference material")
+            traces.append(trace)
+
+            retrieved_context = self.retriever.retrieve(parsed_problem)
+            self._complete_trace(
+                trace,
+                f"Retrieved {len(retrieved_context)} chunks"
+            )
+
+            # -----------------------------
+            # STEP 5: SOLVER
             # -----------------------------
             trace = self._create_trace("Solver", "Executing solution plan")
             traces.append(trace)
 
-            solution = self.solver.solve(
-                parsed_problem,
-                routing_info,
-                context=[strategy]
+            solution = self.solver.process(
+                (parsed_problem, routing_info, retrieved_context)
             )
+
             self._complete_trace(
                 trace,
                 solution.final_answer[:60]
@@ -99,22 +113,24 @@ class LeaderAgent:
             )
 
             # -----------------------------
-            # STEP 5: VERIFIER
+            # STEP 6: VERIFIER (FIXED)
             # -----------------------------
             trace = self._create_trace("Verifier", "Checking correctness")
             traces.append(trace)
 
-            verification = self.verifier.verify(parsed_problem, solution)
+            verification = self.verifier.process(
+                (parsed_problem, solution, retrieved_context)
+            )
+
             self._complete_trace(
                 trace,
                 f"Correct: {verification.is_correct}, "
                 f"Conf: {verification.confidence:.0%}"
             )
 
-            # -------------------------------------------------
-            # ✅ HITL POLICY FIX (CRITICAL)
-            # -------------------------------------------------
-            # HITL ONLY for algebraic problems
+            # -----------------------------
+            # HITL POLICY
+            # -----------------------------
             if (
                 parsed_problem.topic.value in ("algebra", "linear_algebra")
                 and verification.confidence < Config.VERIFIER_CONFIDENCE_THRESHOLD
@@ -130,7 +146,7 @@ class LeaderAgent:
                 )
 
             # -----------------------------
-            # STEP 6: EXPLAINER
+            # STEP 7: EXPLAINER
             # -----------------------------
             trace = self._create_trace("Explainer", "Generating explanation")
             traces.append(trace)
@@ -138,6 +154,7 @@ class LeaderAgent:
             explanation = self.explainer.explain(
                 parsed_problem, solution, verification
             )
+
             self._complete_trace(
                 trace,
                 explanation.summary[:60]

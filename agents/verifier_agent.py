@@ -1,14 +1,14 @@
 """
 Verifier Agent using Agno.
 Performs JEE-style correctness and domain checks.
+CONTEXT-AWARE VERSION.
 """
 
 from agents.base_agent import BaseAgent
-from models.schemas import ParsedProblem, Solution, Verification
-from typing import Any
+from models.schemas import ParsedProblem, Solution, Verification, RetrievedContext
+from typing import Any, List
 import re
 import json
-import math
 
 
 class VerifierAgent(BaseAgent):
@@ -21,23 +21,45 @@ class VerifierAgent(BaseAgent):
                 "Check domain constraints.",
                 "Check probability bounds.",
                 "Check extraneous roots.",
+                "Use reference material only when relevant.",
                 "Return ONLY valid JSON."
             ],
             tools=[]
         )
 
+    # -------------------------------------------------
+    # ENTRY POINT (UPDATED)
+    # -------------------------------------------------
+
     def process(self, input_data: Any) -> Verification:
-        parsed_problem, solution = input_data
-        return self.verify(parsed_problem, solution)
+        """
+        Expected input:
+        (ParsedProblem, Solution, context: list)
+        """
+        if not isinstance(input_data, (list, tuple)):
+            raise TypeError("VerifierAgent.process expects tuple input")
+
+        if len(input_data) == 2:
+            parsed_problem, solution = input_data
+            context = []
+        elif len(input_data) == 3:
+            parsed_problem, solution, context = input_data
+        else:
+            raise TypeError(
+                "VerifierAgent.process expects (ParsedProblem, Solution, [context])"
+            )
+
+        return self.verify(parsed_problem, solution, context)
 
     # -------------------------------------------------
-    # MAIN VERIFICATION
+    # MAIN VERIFICATION (UPDATED)
     # -------------------------------------------------
 
     def verify(
         self,
         parsed_problem: ParsedProblem,
-        solution: Solution
+        solution: Solution,
+        context: List[RetrievedContext]
     ) -> Verification:
 
         topic = parsed_problem.topic.value
@@ -63,10 +85,9 @@ class VerifierAgent(BaseAgent):
                 )
 
         # =================================================
-        # 2. PROBABILITY → SOFT VERIFICATION (NO HITL)
+        # 2. PROBABILITY → BOUNDS CHECK
         # =================================================
         if topic == "probability":
-            # Try to extract numeric probability
             match = re.search(r"([-+]?\d*\.?\d+)", solution.final_answer)
             if match:
                 try:
@@ -82,7 +103,7 @@ class VerifierAgent(BaseAgent):
                 except ValueError:
                     pass
 
-            # Even if numeric check fails, do not block
+            # Soft pass — do not block probability answers
             return Verification(
                 is_correct=True,
                 confidence=0.75,
@@ -92,7 +113,7 @@ class VerifierAgent(BaseAgent):
             )
 
         # =================================================
-        # 3. WORD / CALCULUS / OTHER → LLM VERIFICATION
+        # 3. CONTEXT-AWARE LLM VERIFICATION
         # =================================================
 
         prompt = f"""
@@ -106,7 +127,22 @@ SOLUTION STEPS:
 
 FINAL ANSWER:
 {solution.final_answer}
+"""
 
+        # Inject reference material if available
+        if context:
+            prompt += "\nREFERENCE MATERIAL:\n"
+            for i, ctx in enumerate(context, start=1):
+                source = getattr(ctx, "source", "unknown")
+                text = getattr(ctx, "text", "")
+                prompt += f"""
+REFERENCE {i}:
+SOURCE: {source}
+CONTENT:
+{text}
+"""
+
+        prompt += """
 CHECKS REQUIRED:
 - Logical consistency
 - Domain validity
@@ -114,20 +150,18 @@ CHECKS REQUIRED:
 
 Respond ONLY with JSON:
 
-{{
+{
   "is_correct": true,
   "confidence": 0.8,
   "issues_found": [],
   "suggestions": [],
   "edge_cases_checked": []
-}}
+}
 """
 
         try:
             data = self._extract_json(self.run(prompt))
 
-            # IMPORTANT:
-            # Do NOT allow LLM to block non-algebra problems
             confidence = max(float(data.get("confidence", 0.7)), 0.7)
 
             return Verification(
@@ -139,7 +173,7 @@ Respond ONLY with JSON:
             )
 
         except Exception as e:
-            # Fail-safe: never crash or block
+            # Fail-safe: never block pipeline
             return Verification(
                 is_correct=True,
                 confidence=0.7,
@@ -157,11 +191,9 @@ Respond ONLY with JSON:
         problem_text: str,
         final_answer: str
     ):
-        # Must be an equation
         if "=" not in problem_text:
             return None
 
-        # Extract numeric answer
         match = re.search(r"([-+]?\d*\.?\d+)", final_answer)
         if not match:
             return None
@@ -171,7 +203,6 @@ Respond ONLY with JSON:
         except ValueError:
             return None
 
-        # Ensure only variable is x
         vars_found = set(re.findall(r"[a-zA-Z]", problem_text))
         vars_found.discard("x")
         if vars_found:
@@ -197,19 +228,10 @@ Respond ONLY with JSON:
     # -------------------------------------------------
 
     def _sanitize(self, expr: str) -> str:
-        """
-        Sanitizes math expressions for safe eval.
-        Handles implicit multiplication.
-        """
         expr = expr.replace("^", "**")
         expr = expr.replace(" ", "")
-
-        # Insert * between number and variable or (
         expr = re.sub(r"(\d)([a-zA-Z(])", r"\1*\2", expr)
-
-        # Insert * between ) and number or variable
         expr = re.sub(r"(\))(\d|[a-zA-Z])", r"\1*\2", expr)
-
         return expr
 
     # -------------------------------------------------
