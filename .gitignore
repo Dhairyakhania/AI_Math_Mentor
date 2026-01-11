@@ -1,0 +1,10 @@
+.env
+.venv/
+__pycache__/
+/agents/__pycache__/
+/memory/__pycache__/
+/models/__pycache__/
+/processors/__pycache__/
+/rag/__pycache__/
+/tests/__pycache__/
+/tools/__pycache__/
