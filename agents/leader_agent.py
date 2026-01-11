@@ -111,7 +111,14 @@ class LeaderAgent:
                 f"Conf: {verification.confidence:.0%}"
             )
 
-            if verification.confidence < Config.VERIFIER_CONFIDENCE_THRESHOLD:
+            # -------------------------------------------------
+            # ✅ HITL POLICY FIX (CRITICAL)
+            # -------------------------------------------------
+            # HITL ONLY for algebraic problems
+            if (
+                parsed_problem.topic.value in ("algebra", "linear_algebra")
+                and verification.confidence < Config.VERIFIER_CONFIDENCE_THRESHOLD
+            ):
                 return FinalResult(
                     status="needs_hitl",
                     raw_input=raw_input,

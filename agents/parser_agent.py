@@ -34,13 +34,49 @@ def _has_balanced_brackets(text: str) -> bool:
 
 
 def _looks_like_math(text: str) -> bool:
-    math_tokens = ["=", "+", "-", "*", "/", "^", "√"]
-    return any(tok in text for tok in math_tokens)
+    """
+    Detects whether input is a math problem.
+    Supports equations, word problems, and probability questions.
+    """
+    text_lower = text.lower()
+
+    # 1. Symbolic math
+    math_symbols = ["=", "+", "-", "*", "/", "^", "√"]
+    if any(sym in text for sym in math_symbols):
+        return True
+
+    # 2. Numeric presence (counts, quantities)
+    if re.search(r"\d", text):
+        return True
+
+    # 3. Word-problem / probability cues
+    math_keywords = [
+        "probability", "chance",
+        "how many", "number of", "total",
+        "sum", "difference", "product",
+        "ratio", "fraction", "percent",
+        "average", "mean",
+        "container", "bag", "balls", "cards",
+        "dice", "coin", "pick", "choose",
+        "select", "random"
+    ]
+
+    if any(keyword in text_lower for keyword in math_keywords):
+        return True
+
+    return False
 
 
 def _has_invalid_symbols(text: str) -> bool:
+    """
+    Allows normal English + math.
+    Blocks emojis, control chars, code, etc.
+    """
     return bool(
-        re.search(r"[^a-zA-Z0-9\s\+\-\*/=\^\(\)\[\]\{\}\.,√]", text)
+        re.search(
+            r"[^a-zA-Z0-9\s\+\-\*/=\^\(\)\[\]\{\}\.,√%?:;\'\"<>|\\n\\t]",
+            text
+        )
     )
 
 
@@ -50,8 +86,8 @@ def _has_invalid_symbols(text: str) -> bool:
 
 class ParserAgent(BaseAgent):
     """
-    Strict, non-explanatory math parser.
-    Produces a ParsedProblem or raises on system failure.
+    Strict, domain-aware math parser.
+    Produces a ParsedProblem or clarification request.
     """
 
     def __init__(self):
@@ -96,7 +132,7 @@ class ParserAgent(BaseAgent):
         if not _looks_like_math(text):
             return self._clarify(
                 text,
-                "Input does not appear to contain a mathematical expression."
+                "Input does not appear to be a math problem."
             )
 
         if not _has_balanced_brackets(text):
