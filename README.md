@@ -1,5 +1,7 @@
 # 🧮 Math Mentor – JEE-Grade AI Math Solver
 
+[Live Website Link](https://aimathmentor.streamlit.app/)
+
 Math Mentor is an **AI-powered, multi-agent mathematics problem solver** designed to handle **JEE-level algebra, calculus (including definite integrals), probability, and word problems** with **structured reasoning, verification, and student-friendly explanations**.
 
 Built using the **Agno agent framework**, it combines **LLM reasoning** with **deterministic mathematical checks** to produce reliable, exam-grade solutions.
